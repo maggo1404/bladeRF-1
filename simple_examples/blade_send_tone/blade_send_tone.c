@@ -178,7 +178,7 @@ int main( int arg_count, char **arg_array ) {
      * new to the RF/SDR realm, so I can't speak much to the rationale for this
      * setup
      */
-    test_rc( bladerf_set_loopback( blade
+    test_rc( bladerf_set_loopback( blade, LNA_BYPASS) );
 
     test_rc( bladerf_set_txvga1( blade, 14 ) );
     test_rc( bladerf_set_txvga2( blade, 14 ) );
