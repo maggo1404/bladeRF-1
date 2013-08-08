@@ -37,11 +37,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <signal.h>
 #include <math.h>
 
 /* for allocating memory for storing our samples we want to send to the bladeRF */
-#define samples_per_buffer 2048
+#define samples_per_buffer 1024
 /* int16_t count per buffer */
 #define sample_buffer_size samples_per_buffer*2
 /* sample rate in Hz */
@@ -119,11 +120,6 @@ int main( int arg_count, char **arg_array ) {
        returns 0 if it can't figure out what frequency you put in.. */
     frequency = strtod( arg_array[2], NULL );
 
-    /* ok parameter count is good. */
-    /* print what we got in and will attempt to open */
-    printf("%s using device at %s\n", arg_array[0], arg_array[1] );
-    printf("generating user frequency of %.3f Hz\n", frequency);
-
     /* need an empty pointer for bladerf_open to assign to a bladerf data structure it creates */
     struct bladerf *blade = NULL;
 
@@ -139,21 +135,54 @@ int main( int arg_count, char **arg_array ) {
         exit(-1);
     }
 
+    /* ok parameter count is good. */
+    /* print what we got in and will attempt to open */
+    printf("%s using device at %s\n", arg_array[0], arg_array[1] );
+    printf("generating user frequency of %.3f Hz\n", frequency);
+
     /* got here, device must have been opened successfully */
     printf("Device %s opened successfully\n", arg_array[1] );
+
+    rc = bladerf_is_fpga_configured( blade );
+    test_rc(rc);
+
+    if (!rc) {
+        fprintf( stderr, "Error: bladeRF FPGA hasn't been loaded yet!\n");
+        bladerf_close( blade );
+        exit( EXIT_FAILURE );
+    }
 
     /***********************************************************
      * Now we get to do stuff with the bladeRF we have opened  *
      ***********************************************************/
 
     /* settings configuration tracking object, used for alot of bladeRF calls */
-    bladerf_module bm;
+    bladerf_module bm = TX;
 
     /* enable the bladeRF module, fills in bm struct above with inital data */
-    test_rc( bladerf_enable_module( blade, bm, 1) );
+    test_rc( bladerf_enable_module( blade, bm, true) );
 
     /* setup LO freqency on bladeRF */
     test_rc( bladerf_set_frequency ( blade, bm, LO_FREQ ) );
+
+    /* XXX
+     *
+     * Setup gains on TX side
+     *
+     * I've just pixed some arbitraty values here as I don't have a good feel
+     * yet of what's a good value for example code -- mIKEjONES or bpadalino
+     * would be the Nuand guys on IRC to ask on IRC. (Or perhaps tnt, horizon,
+     * or BzztPloink?)
+     *
+     * To be honest, I got this configuration from bpadalino... I'm a C guy
+     * new to the RF/SDR realm, so I can't speak much to the rationale for this
+     * setup
+     */
+    test_rc( bladerf_set_loopback( blade
+
+    test_rc( bladerf_set_txvga1( blade, 14 ) );
+    test_rc( bladerf_set_txvga2( blade, 14 ) );
+
 
     /* for this example, we will just setup for samplerate and bandwidth. */
     unsigned int actual_samplerate;
@@ -199,7 +228,7 @@ int main( int arg_count, char **arg_array ) {
      * Clean up time...
      ***********************************************************/
     /* disable and close the blade RF */
-    bladerf_enable_module( blade, bm, 0);
+    bladerf_enable_module( blade, bm, false);
     bladerf_close( blade );
 
     /* free sample_buffer we created */
