@@ -46,7 +46,7 @@
 /* int16_t count per buffer */
 #define sample_buffer_size samples_per_buffer*2
 /* sample rate in Hz */
-#define sample_rate 28000000
+#define sample_rate 4000000
 /* we will have a fixed LO Frequency for this test.. 1.2 GHz */
 #define LO_FREQ 1200000000
 
@@ -91,6 +91,20 @@ void signal_callback_handler(int signum) {
    /* signal to stop application */
    isRunning = 0;
 }
+
+/* prints the fancy /-\| sequence showing it's alive..  */
+void update_spinner( int *state ) {
+    printf("[1K");
+    switch (*state) {
+        case 0: printf("|"); *state = 1; break;
+        case 1: printf("/"); *state = 2; break;
+        case 2: printf("-"); *state = 3; break;
+        case 3: printf("\\"); *state= 0; break;
+        default: state = 0;
+    }
+    printf("[1D");
+    fflush(stdout);
+} 
 
 
 /* this program takes 2 inputs from the command line, the device to use, and frequency to generate */
@@ -180,7 +194,7 @@ int main( int arg_count, char **arg_array ) {
      */
     test_rc( bladerf_set_loopback( blade, LNA_BYPASS) );
 
-    test_rc( bladerf_set_txvga1( blade, 14 ) );
+    test_rc( bladerf_set_txvga1( blade, -4 ) );
     test_rc( bladerf_set_txvga2( blade, 14 ) );
 
 
@@ -205,7 +219,7 @@ int main( int arg_count, char **arg_array ) {
     /* freq = cycles/second * 2*pi -> radians/second / (samples/second) -> radians / sample_period -> radian_rate */
     gen_state.radian_rate = ((frequency*6.28318530) / (sample_rate));  /* angular radian change per sample */
     gen_state.phase = 0.0;  /* starting at phase 0 */
-
+    printf(" radian_rate = %f\n", gen_state.radian_rate );
 
     /******************************/
     /* now the magical main loop  */
@@ -216,12 +230,22 @@ int main( int arg_count, char **arg_array ) {
 
     /* this runs until a signal (ctrl-c) is received by the is application */
     /* this causes isRunning to become 0, initially it is set to 1 */
+    int loop_count = 0;
+    int spinner_state = 0;
     while (isRunning) {
         generate_samples( sample_buffer, &gen_state, samples_per_buffer );
         // send can return an error if there is a board problem, so we check it.
         test_rc( bladerf_send_c16( blade, sample_buffer, samples_per_buffer ) );
         // do it again, untill isRunning goes to zero..  (on ctrl-c)
-        printf(".");
+        if ( loop_count > 1000 ) {
+            // printf(".\n");
+            update_spinner( &spinner_state );
+            loop_count=0;
+	    // stop when debugging..
+            //isRunning = 0;
+        } else {
+            loop_count++;
+        }
     }
 
     /***********************************************************
@@ -251,20 +275,27 @@ void generate_samples( int16_t *sample_buffer, struct sample_generation_state *s
             state->phase = state->phase - 6.2831853;
         }
         // compute new I/Q value given new phase.
+        // values results are double in the -1 -> +1 range
         i_q_values = fsincos( state->phase );
         // add to sample buffer
-        sample_buffer[s] = i_q_values.cos;
-        sample_buffer[s+1] = i_q_values.sin;
+        /* make doubles into signed int by scaling by INT16_MAX */
+        sample_buffer[s] = (int16_t) (i_q_values.cos * 32767.0);
+        sample_buffer[s+1] = (int16_t) (i_q_values.sin * 32767.0);
+
+        // print out sample information for debugging..
+	//printf("phase=%f [ %.6f, %.6f ] ( %05d, %05d )\n", state->phase, i_q_values.cos, i_q_values.sin, sample_buffer[s], sample_buffer[s+1] );
 
         // repeat until buffer is full
     }
     // return to calling function..
 }
 
-/* compute the values of sin(x) and cos(x) where x is in radians */
+/* compute the values of sin(x) and cos(x) where val is in radians */
 struct Sin_cos fsincos(double val) {
   struct Sin_cos r;
   r.sin = sin(val);
   r.cos = cos(val);
   return r;
 }
+
+
