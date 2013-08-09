@@ -46,9 +46,12 @@
 /* int16_t count per buffer */
 #define sample_buffer_size samples_per_buffer*2
 /* sample rate in Hz */
-#define sample_rate 4000000
+#define sample_rate 8000000
 /* we will have a fixed LO Frequency for this test.. 1.2 GHz */
 #define LO_FREQ 1200000000
+
+/* MAX DAC Value (TBD) */
+#define max_dac_value 1023
 
 /* global int for process state */
 int isRunning = 1;
@@ -278,9 +281,9 @@ void generate_samples( int16_t *sample_buffer, struct sample_generation_state *s
         // values results are double in the -1 -> +1 range
         i_q_values = fsincos( state->phase );
         // add to sample buffer
-        /* make doubles into signed int by scaling by INT16_MAX */
-        sample_buffer[s] = (int16_t) (i_q_values.cos * 32767.0);
-        sample_buffer[s+1] = (int16_t) (i_q_values.sin * 32767.0);
+        /* make doubles into signed int by scaling by max_dac_value */
+        sample_buffer[s] = (int16_t) (i_q_values.cos * max_dac_value );
+        sample_buffer[s+1] = (int16_t) (i_q_values.sin * max_dac_value );
 
         // print out sample information for debugging..
 	//printf("phase=%f [ %.6f, %.6f ] ( %05d, %05d )\n", state->phase, i_q_values.cos, i_q_values.sin, sample_buffer[s], sample_buffer[s+1] );
