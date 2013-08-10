@@ -50,9 +50,6 @@
 /* we will have a fixed LO Frequency for this test.. 1.2 GHz */
 #define LO_FREQ 1200000000
 
-/* MAX DAC Value (TBD) */
-#define max_dac_value 1023
-
 /* global int for process state */
 int isRunning = 1;
 
@@ -67,7 +64,7 @@ struct Sin_cos {
 /* computes the sin and cos in for val in radians */
 /* falls back on OS math.h routine if hardware not capable, or in port ot other arch */
 /* with GCC you will need the following flags to get it to go:
- *   -c -S -O3 -ffast-math -mfpmath=387 */
+ *   -O3 -ffast-math -mfpmath=387 */
 /* Computing it using the OS sin()/cos() functions can take 200+ clock cycles.
  *    this method takes ~3, if its working. */
 struct Sin_cos fsincos(double val);
@@ -79,7 +76,9 @@ struct sample_generation_state {
 };
 
 void generate_samples( int16_t *sample_buffer, struct sample_generation_state *state, int sample_count );
-
+void setup_bladerf_common(struct bladerf *blade);
+ 
+/* process return code from bladeRF calls */ 
 void test_rc( int rc ) {
   if (rc < 0) {
       printf("BladeRF api call returned error %d, exiting..\n", rc );
@@ -197,9 +196,14 @@ int main( int arg_count, char **arg_array ) {
      */
     test_rc( bladerf_set_loopback( blade, LNA_BYPASS) );
 
-    test_rc( bladerf_set_txvga1( blade, -4 ) );
-    test_rc( bladerf_set_txvga2( blade, 14 ) );
+    /* tx VGA1 -30 to -4 in 1 dB steps */
+    test_rc( bladerf_set_txvga1( blade, -10 ) );
+    /* tx VGA2 0 to 25 in 1 dB steps */
+    test_rc( bladerf_set_txvga2( blade, 10 ) );
 
+    /* sets up the lms chip on the bladeRF*/
+    setup_bladerf_common( blade );
+ 
 
     /* for this example, we will just setup for samplerate and bandwidth. */
     unsigned int actual_samplerate;
@@ -230,18 +234,30 @@ int main( int arg_count, char **arg_array ) {
 
     /* isRunning defines if the loop keeps going, gets set to 0 to exit and shutdown */
     printf(" Main Loop Starting.. sending samples..\n");
+    sleep(1);
+
+    /* when debuging, print header stuff for sample table */
+    //printf(" PHASE       [ I  ,  Q ]  ( i sample, q sample )\n");
 
     /* this runs until a signal (ctrl-c) is received by the is application */
     /* this causes isRunning to become 0, initially it is set to 1 */
     int loop_count = 0;
     int spinner_state = 0;
+    int samples_written = 0;
     while (isRunning) {
         generate_samples( sample_buffer, &gen_state, samples_per_buffer );
         // send can return an error if there is a board problem, so we check it.
-        test_rc( bladerf_send_c16( blade, sample_buffer, samples_per_buffer ) );
+        samples_written = bladerf_send_c16( blade, sample_buffer, samples_per_buffer );
+        if ( samples_written != samples_per_buffer ) {
+            if ( samples_written < 0 ) {
+                test_rc( samples_written );
+            } else {
+                printf("Under-run, short write of %d samples..\n", samples_written );
+            }
+        }
+            
         // do it again, untill isRunning goes to zero..  (on ctrl-c)
         if ( loop_count > 1000 ) {
-            // printf(".\n");
             update_spinner( &spinner_state );
             loop_count=0;
 	    // stop when debugging..
@@ -281,12 +297,13 @@ void generate_samples( int16_t *sample_buffer, struct sample_generation_state *s
         // values results are double in the -1 -> +1 range
         i_q_values = fsincos( state->phase );
         // add to sample buffer
-        /* make doubles into signed int by scaling by max_dac_value */
-        sample_buffer[s] = (int16_t) (i_q_values.cos * max_dac_value );
-        sample_buffer[s+1] = (int16_t) (i_q_values.sin * max_dac_value );
-
+        /* make doubles into signed int by scaling by 2046 */
+        /* dac samples are 12 bits in size.. we just hold them in a 16bit variable */
+        sample_buffer[s]   = 0xa000 | (int16_t)( i_q_values.cos * 2000 ); 
+        sample_buffer[s+1] = 0x5000 | (int16_t)( i_q_values.sin * 2000 );
+ 
         // print out sample information for debugging..
-	//printf("phase=%f [ %.6f, %.6f ] ( %05d, %05d )\n", state->phase, i_q_values.cos, i_q_values.sin, sample_buffer[s], sample_buffer[s+1] );
+	// printf("phase=%f [ %-.6f, %-.6f ]    ( 0x%03x, 0x%03x )\n", state->phase, i_q_values.cos, i_q_values.sin, sample_buffer[s], sample_buffer[s+1] );
 
         // repeat until buffer is full
     }
@@ -301,4 +318,16 @@ struct Sin_cos fsincos(double val) {
   return r;
 }
 
+/* directly stolen from gr-osmosdr */
+void setup_bladerf_common( struct bladerf *blade ) {
+    gpio_write( blade, 0x57 ); /* enable LMS RX & TX, select lower band */
+    lms_spi_write( blade, 0x5a, 0xa0 ); /* polarity of the IQSel signal */
+    /* values are taken from LMS6002D FAQ 5.27 */
+    lms_spi_write( blade, 0x05, 0x3e ); /* enable the tx and rx modules */
+    lms_spi_write( blade, 0x47, 0x40 ); /* Improving Tx spurious emission performance */
+    lms_spi_write( blade, 0x59, 0x29 ); /* Improving ADC's performance */
+    lms_spi_write( blade, 0x64, 0x36 ); /* Common Mode Voltage For ADC's */
+    lms_spi_write( blade, 0x79, 0x37 ); /* Higher LNA Gain */
+    return;
+}
 
