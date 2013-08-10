@@ -40,6 +40,7 @@
 #include <stdbool.h>
 #include <signal.h>
 #include <math.h>
+#include <unistd.h>
 
 /* for allocating memory for storing our samples we want to send to the bladeRF */
 #define samples_per_buffer 1024
@@ -49,6 +50,10 @@
 #define sample_rate 8000000
 /* we will have a fixed LO Frequency for this test.. 1.2 GHz */
 #define LO_FREQ 1200000000
+/* dump samples to test file called? */
+#define testfile "output.bin"
+/* set debug mode (comment to disable) */
+//#define DEBUG 1
 
 /* global int for process state */
 int isRunning = 1;
@@ -77,8 +82,9 @@ struct sample_generation_state {
 
 void generate_samples( int16_t *sample_buffer, struct sample_generation_state *state, int sample_count );
 void setup_bladerf_common(struct bladerf *blade);
- 
-/* process return code from bladeRF calls */ 
+void hexdump(void *mem, unsigned int len);
+
+/* process return code from bladeRF calls */
 void test_rc( int rc ) {
   if (rc < 0) {
       printf("BladeRF api call returned error %d, exiting..\n", rc );
@@ -106,7 +112,7 @@ void update_spinner( int *state ) {
     }
     printf("[1D");
     fflush(stdout);
-} 
+}
 
 
 /* this program takes 2 inputs from the command line, the device to use, and frequency to generate */
@@ -129,6 +135,12 @@ int main( int arg_count, char **arg_array ) {
         printf(" DEBUG: Got %d arguments..\n", arg_count );
         exit(-1);
     }
+
+    /* open testfile for writing -- debug only */
+#ifdef DEBUG
+    int output_file = open( testfile, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR );
+    int bytes_wrote;
+#endif
 
     /* convert arg_array[2] (frequency) to from a text string to a real floating point number */
     double frequency;
@@ -203,7 +215,7 @@ int main( int arg_count, char **arg_array ) {
 
     /* sets up the lms chip on the bladeRF*/
     setup_bladerf_common( blade );
- 
+
 
     /* for this example, we will just setup for samplerate and bandwidth. */
     unsigned int actual_samplerate;
@@ -236,8 +248,12 @@ int main( int arg_count, char **arg_array ) {
     printf(" Main Loop Starting.. sending samples..\n");
     sleep(1);
 
+
     /* when debuging, print header stuff for sample table */
-    //printf(" PHASE       [ I  ,  Q ]  ( i sample, q sample )\n");
+#ifdef DEBUG
+    printf(" Running in debug mode.. \n");
+    printf(" PHASE       [ I  ,  Q ]  ( i sample, q sample )\n");
+#endif
 
     /* this runs until a signal (ctrl-c) is received by the is application */
     /* this causes isRunning to become 0, initially it is set to 1 */
@@ -248,6 +264,9 @@ int main( int arg_count, char **arg_array ) {
         generate_samples( sample_buffer, &gen_state, samples_per_buffer );
         // send can return an error if there is a board problem, so we check it.
         samples_written = bladerf_send_c16( blade, sample_buffer, samples_per_buffer );
+#ifdef DEBUG
+        bytes_wrote = write( output_file, sample_buffer, sample_buffer_size );
+#endif
         if ( samples_written != samples_per_buffer ) {
             if ( samples_written < 0 ) {
                 test_rc( samples_written );
@@ -255,13 +274,19 @@ int main( int arg_count, char **arg_array ) {
                 printf("Under-run, short write of %d samples..\n", samples_written );
             }
         }
-            
+
         // do it again, untill isRunning goes to zero..  (on ctrl-c)
+#ifdef DEBUG
+        if ( loop_count > 1 ) {
+#else
         if ( loop_count > 1000 ) {
-            update_spinner( &spinner_state );
+#endif
+          update_spinner( &spinner_state );
             loop_count=0;
 	    // stop when debugging..
-            //isRunning = 0;
+#ifdef DEBUG
+            isRunning = 0;
+#endif
         } else {
             loop_count++;
         }
@@ -275,7 +300,16 @@ int main( int arg_count, char **arg_array ) {
     bladerf_close( blade );
 
     /* free sample_buffer we created */
+#ifdef DEBUG
+    printf("---- DUMP of last buffer of %d bytes sent to bladeRF ----\n", sample_buffer_size );
+    hexdump( sample_buffer, sample_buffer_size );
+#endif
     free(sample_buffer);
+
+    /* close debug output_file */
+#ifdef DEBUG
+    close( output_file );
+#endif
 
     printf("Shutdown Complete.\n");
     return 0;
@@ -299,12 +333,13 @@ void generate_samples( int16_t *sample_buffer, struct sample_generation_state *s
         // add to sample buffer
         /* make doubles into signed int by scaling by 2046 */
         /* dac samples are 12 bits in size.. we just hold them in a 16bit variable */
-        sample_buffer[s]   = 0xa000 | (int16_t)( i_q_values.cos * 2000 ); 
-        sample_buffer[s+1] = 0x5000 | (int16_t)( i_q_values.sin * 2000 );
- 
-        // print out sample information for debugging..
-	// printf("phase=%f [ %-.6f, %-.6f ]    ( 0x%03x, 0x%03x )\n", state->phase, i_q_values.cos, i_q_values.sin, sample_buffer[s], sample_buffer[s+1] );
+        sample_buffer[s]   = (0xa000 | (int16_t)( i_q_values.cos * 2000 ));
+        sample_buffer[s+1] = (0x5000 | (int16_t)( i_q_values.sin * 2000 ));
 
+        // print out sample information for debugging..
+#ifdef DEBUG
+	printf("phase=%f [ %-.6f, %-.6f ]    ( 0x%03x, 0x%03x )\n", state->phase, i_q_values.cos, i_q_values.sin, sample_buffer[s], sample_buffer[s+1] );
+#endif
         // repeat until buffer is full
     }
     // return to calling function..
@@ -331,3 +366,53 @@ void setup_bladerf_common( struct bladerf *blade ) {
     return;
 }
 
+#ifndef HEXDUMP_COLS
+#define HEXDUMP_COLS 8
+#endif
+
+// PRINT A MEMORY SPACE IN HEX WITH ADDRESS OFFSET ON THE SIDES.
+// FANCY HEX DUMP OF A BUFFER TO THE SCREEN
+void hexdump(void *mem, unsigned int len)
+{
+  unsigned int i, j;
+
+  for(i = 0; i < len + ((len % HEXDUMP_COLS) ? (HEXDUMP_COLS - len % HEXDUMP_COLS) : 0); i++)
+  {
+    /* print offset */
+    if(i % HEXDUMP_COLS == 0)
+    {
+      printf("0x%06x: ", i);
+    }
+
+    /* print hex data */
+    if(i < len)
+    {
+      printf("%02x ", 0xFF & ((char*)mem)[i]);
+    }
+    else /* end of block, just aligning for ASCII dump */
+    {
+      printf("   ");
+    }
+
+    /* print ASCII dump */
+    if(i % HEXDUMP_COLS == (HEXDUMP_COLS - 1))
+    {
+      for(j = i - (HEXDUMP_COLS - 1); j <= i; j++)
+      {
+        if(j >= len) /* end of block, not really printing */
+        {
+          putchar(' ');
+        }
+        else if(isprint(((char*)mem)[j])) /* printable char */
+        {
+          putchar(0xFF & ((char*)mem)[j]);
+        }
+        else /* other char */
+        {
+          putchar('.');
+        }
+      }
+      putchar('\n');
+    }
+  }
+}
