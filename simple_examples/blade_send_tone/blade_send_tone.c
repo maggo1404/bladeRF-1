@@ -1,5 +1,7 @@
 /* Simple program to produce a tone at N Hz from TX LO Center of a bladeRF
  * Peter Fetterer (kb3gtn)
+ * Marco Schwan 
+ *      add the libusb support
  *
  * Some Theory:
  *    The transmiter takes complex samples.  These samples have 2 parts.  A in-phase component (I)
@@ -124,12 +126,11 @@ int main( int arg_count, char **arg_array ) {
 
     /* this program expects 2 arguments, the device to use, and the frequency to generate */
     /* 3 because arg_count includes program name as first arguments.. (1 starting index) */
-    if ( arg_count != 3 ) {
+    if ( arg_count != 2 ) {
         /* This program was called none, or more than one argument */
         /* arg_array[0] is the executable name */
         /* gently remind use of the correct usage.. */
-        printf("correct usage: %s <device to query>  <frequency_Hz>", arg_array[0] );
-        printf(" where device is something like /dev/bladeRF0\n");
+        printf("correct usage: %s <frequency_Hz>", arg_array[0] );
         printf(" where frequency_Hz is the offset from carrier +/-%f\n", sample_rate/4.0 );
         /* terminate execution and return -1 (generic error) to OS */
         printf(" DEBUG: Got %d arguments..\n", arg_count );
@@ -146,15 +147,18 @@ int main( int arg_count, char **arg_array ) {
     double frequency;
     /* simple stdlib method for string to double conversion.
        returns 0 if it can't figure out what frequency you put in.. */
-    frequency = strtod( arg_array[2], NULL );
+    frequency = strtod( arg_array[1], NULL );
 
     /* need an empty pointer for bladerf_open to assign to a bladerf data structure it creates */
     struct bladerf *blade = NULL;
 
     /* call to open the device we want, returns a pointer to a data structure we use
      * for all following calls..  Sorta like a device handle (windows talk) */
-    /* Tell libbladeRF to try to open the device in arg_array[1] */
-    blade = bladerf_open( arg_array[1] );
+    bladerf_open(&blade ,"" );
+    
+    // Description the format write to the bladeRF
+    struct bladerf_metadata meta_data;
+    meta_data.version = FORMAT_SC16;
 
     /* if the open fails, blade will remain NULL or 0 */
     if ( blade == NULL ) {
@@ -184,15 +188,6 @@ int main( int arg_count, char **arg_array ) {
      * Now we get to do stuff with the bladeRF we have opened  *
      ***********************************************************/
 
-    /* settings configuration tracking object, used for alot of bladeRF calls */
-    bladerf_module bm = TX;
-
-    /* enable the bladeRF module, fills in bm struct above with inital data */
-    test_rc( bladerf_enable_module( blade, bm, true) );
-
-    /* setup LO freqency on bladeRF */
-    test_rc( bladerf_set_frequency ( blade, bm, LO_FREQ ) );
-
     /* XXX
      *
      * Setup gains on TX side
@@ -206,25 +201,20 @@ int main( int arg_count, char **arg_array ) {
      * new to the RF/SDR realm, so I can't speak much to the rationale for this
      * setup
      */
-    test_rc( bladerf_set_loopback( blade, LNA_BYPASS) );
-
+    
     /* tx VGA1 -30 to -4 in 1 dB steps */
     test_rc( bladerf_set_txvga1( blade, -10 ) );
     /* tx VGA2 0 to 25 in 1 dB steps */
     test_rc( bladerf_set_txvga2( blade, 10 ) );
 
-    /* sets up the lms chip on the bladeRF*/
-    setup_bladerf_common( blade );
-
-
     /* for this example, we will just setup for samplerate and bandwidth. */
     unsigned int actual_samplerate;
-    test_rc( bladerf_set_sample_rate( blade, bm, sample_rate, &actual_samplerate ) );
+    test_rc( bladerf_set_sample_rate( blade, TX, sample_rate, &actual_samplerate ) );
     printf("requested %f Msps, was givin %f Msps\n", sample_rate / 1000000.0, actual_samplerate / 1000000.0 );
 
     /* set baseband bandwidth to sample_rate/2 Hz ( I Bandwidth = Q Bandwidth ) */
     unsigned int actual_bandwidth;
-    test_rc( bladerf_set_bandwidth( blade, bm, sample_rate/2, &actual_bandwidth ) );
+    test_rc( bladerf_set_bandwidth( blade, TX, sample_rate/2, &actual_bandwidth ) );
     printf("requested %f MHz BW, was givin %f MHz\n", sample_rate/2000000.0, actual_bandwidth / 1000000.0 );
 
     /* create a buffer of samples to send */
@@ -239,6 +229,12 @@ int main( int arg_count, char **arg_array ) {
     gen_state.radian_rate = ((frequency*6.28318530) / (sample_rate));  /* angular radian change per sample */
     gen_state.phase = 0.0;  /* starting at phase 0 */
     printf(" radian_rate = %f\n", gen_state.radian_rate );
+    
+    /* enable the bladeRF module, fills in bm struct above with inital data */
+    test_rc( bladerf_enable_module( blade, TX, true) );
+    
+    /* setup LO freqency on bladeRF */
+    test_rc( bladerf_set_frequency ( blade, TX, LO_FREQ ) );
 
     /******************************/
     /* now the magical main loop  */
@@ -263,7 +259,7 @@ int main( int arg_count, char **arg_array ) {
     while (isRunning) {
         generate_samples( sample_buffer, &gen_state, samples_per_buffer );
         // send can return an error if there is a board problem, so we check it.
-        samples_written = bladerf_send_c16( blade, sample_buffer, samples_per_buffer );
+        samples_written = bladerf_tx(blade, FORMAT_SC16, sample_buffer, samples_per_buffer,  &meta_data);
 #ifdef DEBUG
         bytes_wrote = write( output_file, sample_buffer, sample_buffer_size );
 #endif
@@ -296,7 +292,7 @@ int main( int arg_count, char **arg_array ) {
      * Clean up time...
      ***********************************************************/
     /* disable and close the blade RF */
-    bladerf_enable_module( blade, bm, false);
+    bladerf_enable_module( blade, TX, false);
     bladerf_close( blade );
 
     /* free sample_buffer we created */
@@ -351,19 +347,6 @@ struct Sin_cos fsincos(double val) {
   r.sin = sin(val);
   r.cos = cos(val);
   return r;
-}
-
-/* directly stolen from gr-osmosdr */
-void setup_bladerf_common( struct bladerf *blade ) {
-    gpio_write( blade, 0x57 ); /* enable LMS RX & TX, select lower band */
-    lms_spi_write( blade, 0x5a, 0xa0 ); /* polarity of the IQSel signal */
-    /* values are taken from LMS6002D FAQ 5.27 */
-    lms_spi_write( blade, 0x05, 0x3e ); /* enable the tx and rx modules */
-    lms_spi_write( blade, 0x47, 0x40 ); /* Improving Tx spurious emission performance */
-    lms_spi_write( blade, 0x59, 0x29 ); /* Improving ADC's performance */
-    lms_spi_write( blade, 0x64, 0x36 ); /* Common Mode Voltage For ADC's */
-    lms_spi_write( blade, 0x79, 0x37 ); /* Higher LNA Gain */
-    return;
 }
 
 #ifndef HEXDUMP_COLS
